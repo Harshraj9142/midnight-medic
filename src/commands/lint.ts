@@ -119,24 +119,46 @@ function extractConstructorArgs(lines: string[], file: string): LintIssue | null
 
 /** Find all .compact files. */
 async function findCompactFiles(dir: string): Promise<string[]> {
-  return glob('**/*.compact', {
+  let files = await glob('**/*.compact', {
     cwd: dir,
-    ignore: ['node_modules/**', 'dist/**', 'managed/**'],
+    ignore: ['**/node_modules/**', '**/midnight-medic/**', '**/dist/**', '**/managed/**'],
     absolute: true,
   });
+
+  // Self-Correction: If not found in current dir, walk up to workspace root
+  if (files.length === 0) {
+    files = await glob('**/*.compact', {
+      cwd: path.join(dir, '..'),
+      ignore: ['**/node_modules/**', '**/midnight-medic/**', '**/dist/**', '**/managed/**'],
+      absolute: true,
+    });
+  }
+  return files;
 }
 
 export async function runLint(targetDir: string): Promise<void> {
   header('Midnight Lint — scanning Compact contracts...');
   console.log(chalk.dim('  (Note: Static pattern-matching. Always defer to the Compact compiler.)\n'));
 
-  const files = await findCompactFiles(targetDir);
+  const allFiles = await findCompactFiles(targetDir);
 
-  if (files.length === 0) {
-    info('No .compact files found', `Searched in: ${targetDir}`);
+  if (allFiles.length === 0) {
+    info('No .compact files found', `Searched in: ${targetDir} and its parent.`);
     console.log('');
     return;
   }
+
+  // De-duplicate by basename (keep the one in src if possible)
+  const uniqueFilesMap = new Map<string, string>();
+  for (const f of allFiles) {
+    const name = path.basename(f);
+    const existing = uniqueFilesMap.get(name);
+    // Prefer src/ or shorter paths as source of truth
+    if (!existing || f.includes('/src/') || f.length < existing.length) {
+      uniqueFilesMap.set(name, f);
+    }
+  }
+  const files = Array.from(uniqueFilesMap.values());
 
   let totalErrors = 0;
   let totalWarnings = 0;

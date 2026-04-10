@@ -7,6 +7,19 @@ export interface PortCheckResult extends CheckResult {
   occupied: boolean;
   pid?: string;
   processName?: string;
+  isExpected?: boolean;
+}
+
+/**
+ * Terminate a process by PID.
+ */
+export function killProcess(pid: string): boolean {
+  try {
+    execSync(`kill -9 ${pid}`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

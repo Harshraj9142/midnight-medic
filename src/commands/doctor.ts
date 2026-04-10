@@ -1,11 +1,11 @@
 import chalk from 'chalk';
 import { execSync } from 'node:child_process';
-import { checkDockerDaemon, getDockerVersion } from '../checks/docker.js';
-import { checkPort } from '../checks/port.js';
+import { checkDockerDaemon, getDockerVersion, checkDockerConflicts, removeContainer } from '../checks/docker.js';
+import { checkPort, killProcess } from '../checks/port.js';
 import { checkIndexer, checkProofServer } from '../checks/network.js';
 import { checkWallet } from '../checks/wallet.js';
 import { MIDNIGHT_PORTS } from '../compat/matrix.js';
-import { section, printResult, summary, header, divider } from '../ui/output.js';
+import { section, printResult, summary, header, divider, info } from '../ui/output.js';
 import type { CheckResult } from '../ui/output.js';
 
 function countResults(results: CheckResult[]): { errors: number; warnings: number } {
@@ -77,8 +77,11 @@ function copyToClipboard(text: string): boolean {
   }
 }
 
-export async function runDoctor(options: { export: boolean; cwd: string }): Promise<void> {
+export async function runDoctor(options: { export: boolean; cwd: string; fix?: boolean }): Promise<void> {
   header('Midnight Doctor — running environment scan...');
+  if (options.fix) {
+    info('Healing Engine', 'Auto-fix mode engaged. Attempting to resolve failures...');
+  }
 
   const allResults: CheckResult[] = [];
 
@@ -92,6 +95,35 @@ export async function runDoctor(options: { export: boolean; cwd: string }): Prom
   printResult(dockerResult);
   allResults.push(dockerResult);
 
+  // ── Conflicts (Zombie Containers) ──────────────────────────────────────────
+  const conflictResults = checkDockerConflicts(['skity-proof-server', 'skity-indexer', 'skity-node']);
+  if (conflictResults.length > 0) {
+    section('Conflicts');
+    for (const r of conflictResults) {
+      if (options.fix && r.status === 'fail' && r.metadata?.containerId) {
+        process.stdout.write(chalk.dim(`    [fix] Removing zombie container ${r.label.split(': ')[1]}... `));
+        const success = removeContainer(r.metadata.containerId as string);
+        if (success) {
+          console.log(chalk.green('Done.'));
+          r.status = 'ok';
+          r.detail = chalk.dim('Conflict cleared by doctor');
+          r.fix = undefined;
+        } else {
+          console.log(chalk.red('Failed.'));
+        }
+      }
+      printResult(r);
+      allResults.push(r);
+    }
+  }
+
+  // ── Network & Proof Server (Check first to inform Port results) ───────────
+  const [preprodResult, previewResult, proofResult] = await Promise.all([
+    checkIndexer('preprod'),
+    checkIndexer('preview'),
+    checkProofServer(),
+  ]);
+
   // ── Ports ──────────────────────────────────────────────────────────────────
   section('Ports');
   const portKeys = Object.entries(MIDNIGHT_PORTS) as [string, number][];
@@ -100,26 +132,65 @@ export async function runDoctor(options: { export: boolean; cwd: string }): Prom
       checkPort(port, `${port} (${name})`),
     ),
   );
+
+  let anyFixes = false;
   portResults.forEach((r) => {
+    // Suppress error if the Proof Server is actually healthy on this port
+    if (r.port === 6300 && proofResult.status === 'ok') {
+      r.status = 'ok';
+      r.detail = chalk.green('Active (Expected: Proof Server)');
+      r.fix = undefined;
+    }
+    // Suppress error if Indexer is healthy on this port (8088)
+    if (r.port === 8088 && (preprodResult.status === 'ok' || previewResult.status === 'ok')) {
+      r.status = 'ok';
+      r.detail = chalk.green('Active (Expected: Indexer)');
+      r.fix = undefined;
+    }
+
+    // Attempt fix if port is occupied and not by an expected service
+    if (options.fix && r.status === 'fail' && r.occupied && r.pid) {
+      process.stdout.write(chalk.dim(`    [fix] Terminating process ${r.pid} (${r.processName})... `));
+      const success = killProcess(r.pid);
+      if (success) {
+        console.log(chalk.green('Done.'));
+        r.status = 'ok';
+        r.detail = chalk.dim('Port cleared by doctor');
+        r.fix = undefined;
+        anyFixes = true;
+      } else {
+        console.log(chalk.red('Failed.'));
+      }
+    }
+    
     printResult(r);
     allResults.push(r);
   });
 
-  // ── Network ────────────────────────────────────────────────────────────────
-  section('Network');
-  const [preprodResult, previewResult] = await Promise.all([
-    checkIndexer('preprod'),
-    checkIndexer('preview'),
-  ]);
-  printResult(preprodResult);
-  printResult(previewResult);
-  allResults.push(preprodResult, previewResult);
+  // ── Re-verify if fixes were applied ────────────────────────────────────────
+  let finalPreprod = preprodResult;
+  let finalPreview = previewResult;
+  let finalProof = proofResult;
+  
+  if (anyFixes) {
+    process.stdout.write(chalk.dim('  [-] Verifying fixes... '));
+    const [revPre, revPrv, revPrf] = await Promise.all([
+      checkIndexer('preprod'),
+      checkIndexer('preview'),
+      checkProofServer(),
+    ]);
+    finalPreprod = revPre;
+    finalPreview = revPrv;
+    finalProof = revPrf;
+    console.log(chalk.green('Recovery complete.'));
+  }
 
-  // ── Proof Server ───────────────────────────────────────────────────────────
-  section('Proof Server');
-  const proofResult = await checkProofServer();
-  printResult(proofResult);
-  allResults.push(proofResult);
+  // ── Network Details ────────────────────────────────────────────────────────
+  section('Services');
+  printResult(finalPreprod);
+  printResult(finalPreview);
+  printResult(finalProof);
+  allResults.push(finalPreprod, finalPreview, finalProof);
 
   // ── Wallet ─────────────────────────────────────────────────────────────────
   section('Wallet');

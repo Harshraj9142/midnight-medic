@@ -61,10 +61,21 @@ export async function checkProofServer(
     if (!res.ok) {
       return { label, status: 'fail', detail: `HTTP ${res.status}` };
     }
-    const text = await res.text();
-    // Response is typically a plain version string like "8.0.3"
-    const version = text.trim().replace(/"/g, '');
-    return { label, status: 'ok', detail: `Healthy (v${version})`, version };
+    const text = (await res.text()).trim().replace(/"/g, '');
+    
+    // Validate that it looks like a semantic version (e.g. 8.0.3)
+    const isVersion = /^\d+\.\d+\.\d+$/.test(text);
+    
+    if (isVersion) {
+      return { label, status: 'ok', detail: `Healthy (v${text})`, version: text };
+    } else {
+      return { 
+        label, 
+        status: 'fail', 
+        detail: `Invalid response: "${text.substring(0, 20)}..."`,
+        fix: 'A non-Midnight process is responding on this port. Run with --fix to clear it.'
+      };
+    }
   } catch (e: unknown) {
     const isTimeout = e instanceof Error && e.name === 'AbortError';
     return {

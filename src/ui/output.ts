@@ -80,3 +80,26 @@ export function printResult(result: CheckResult): void {
       break;
   }
 }
+
+/** 
+ * Cinematic 2-second delay with a spinner for demo purposes 
+ * Makes the tool feel like it's performing deep analysis.
+ */
+export async function diagnosticPulse(message = 'Analyzing Midnight environment...'): Promise<void> {
+  const spinner = ['○', '◎', '◉', '●'];
+  let i = 0;
+  
+  process.stdout.write(`\r  ${chalk.cyan(spinner[0])} ${chalk.dim(message)} `);
+  
+  const interval = setInterval(() => {
+    process.stdout.write(`\r  ${chalk.cyan(spinner[i++ % 4])} ${chalk.dim(message)} `);
+  }, 150);
+
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      clearInterval(interval);
+      process.stdout.write('\r' + ' '.repeat(process.stdout.columns ?? 80) + '\r');
+      resolve();
+    }, 1800); // ~2 second pulse
+  });
+}

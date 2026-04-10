@@ -9,6 +9,9 @@ import { runProfile } from './commands/profile.js';
 import { runTrace } from './commands/trace.js';
 import { runOptimize } from './commands/optimize.js';
 import { runEstimate } from './commands/estimate.js';
+import { runMatrix } from './commands/matrix.js';
+import { runFuzz } from './commands/fuzz.js';
+import { diagnosticPulse } from './ui/output.js';
 
 import chalk from 'chalk';
 
@@ -22,11 +25,13 @@ program
 // ── doctor ───────────────────────────────────────────────────────────────────
 program
   .command('doctor')
-  .description('Run a full environment scan: Docker, ports, network, proof server, and wallet.')
-  .option('--export', 'Copy a Markdown report to the clipboard for sharing on Discord.')
-  .option('--cwd <path>', 'Working directory to scan (default: current directory)', process.cwd())
-  .action(async (options: { export: boolean; cwd: string }) => {
-    await runDoctor({ export: options.export ?? false, cwd: options.cwd });
+  .description('Check and fix your local development environment for Midnight.')
+  .option('--export', 'Copy the diagnostic report to your clipboard.')
+  .option('--fix', 'Automatically attempt to resolve common environment issues.')
+  .option('--cwd <path>', 'Project directory to scan for .env and config (default: current directory)', process.cwd())
+  .action(async (options: { export: boolean; cwd: string; fix: boolean }) => {
+    await diagnosticPulse('Scanning Midnight environment...');
+    await runDoctor({ export: options.export, cwd: options.cwd, fix: options.fix });
   });
 
 // ── sync ─────────────────────────────────────────────────────────────────────
@@ -45,6 +50,7 @@ program
   .description('Statically analyze .compact files for common errors and anti-patterns.')
   .action(async (targetPath: string | undefined) => {
     const dir = targetPath ?? process.cwd();
+    await diagnosticPulse('Auditing Compact source code...');
     await runLint(dir);
   });
 
@@ -54,8 +60,10 @@ program
   .description('Decrypt and display the local private state for your Midnight contract.')
   .option('--db <path>', 'Path to the LevelDB directory (auto-detected if not specified).')
   .option('--cwd <path>', 'Working directory to search for .env and db/ (default: current directory)', process.cwd())
-  .action(async (options: { db?: string; cwd: string }) => {
-    await runInspect({ cwd: options.cwd, db: options.db });
+  .option('--live', 'Show a high-fidelity trace of the private state (Live Diagnostic Mode).')
+  .action(async (options: { db?: string; cwd: string; live: boolean }) => {
+    await diagnosticPulse('Decrypting Secure Vault state...');
+    await runInspect({ cwd: options.cwd, db: options.db, live: options.live });
   });
 
 // ── logs ─────────────────────────────────────────────────────────────────────
@@ -73,6 +81,7 @@ program
   .option('--json', 'Output raw JSON instead of the visual flamegraph.')
   .action(async (targetPath: string | undefined, options: { json: boolean }) => {
     const dir = targetPath ?? process.cwd();
+    await diagnosticPulse('Profiling ZKIR gate complexity...');
     await runProfile(dir, { json: options.json ?? false });
   });
 
@@ -84,6 +93,7 @@ program
   .option('--container <name>', 'Specify the proof server Docker container name manually.')
   .option('--cwd <path>', 'Working directory to search for ZKIR and .compact files.', process.cwd())
   .action(async (options: { circuit?: string; container?: string; cwd: string }) => {
+    await diagnosticPulse('Initializing X-ray Decompiler...');
     await runTrace({ circuit: options.circuit, container: options.container, cwd: options.cwd });
   });
 
@@ -102,7 +112,28 @@ program
   .description('Pre-flight DUST cost estimate using ZKIR gate weights and Midnight fee model.')
   .option('--cwd <path>', 'Working directory to search for ZKIR files.', process.cwd())
   .action(async (circuit: string | undefined, options: { cwd: string }) => {
+    await diagnosticPulse('Calculating DUST fee estimates...');
     await runEstimate(circuit, options.cwd);
+  });
+
+// ── matrix ───────────────────────────────────────────────────────────────────
+program
+  .command('matrix')
+  .description('Generate a Privacy Visibility Matrix showing Public vs Private state access.')
+  .option('--cwd <path>', 'Working directory to scan.', process.cwd())
+  .action(async (options: { cwd: string }) => {
+    await diagnosticPulse('Mapping Privacy Access Matrix...');
+    await runMatrix(options.cwd);
+  });
+
+// ── fuzz ─────────────────────────────────────────────────────────────────────
+program
+  .command('fuzz <circuit>')
+  .description('Property-based testing for circuits: blast with random data to find crashes.')
+  .option('--cwd <path>', 'Working directory to scan.', process.cwd())
+  .action(async (circuit: string, options: { cwd: string }) => {
+    await diagnosticPulse(`Fuzzing ${circuit} with random witnesses...`);
+    await runFuzz(circuit, options.cwd);
   });
 
 // ── Default: show banner ──────────────────────────────────────────────────────

@@ -1,8 +1,14 @@
 import { execSync } from 'node:child_process';
 import type { CheckResult } from '../ui/output.js';
 
-export interface DockerCheckResult extends CheckResult {
-  running: boolean;
+// Prepend common install paths for Docker on macOS/Linux
+const DOCKER_CMD_PREFIX = 'export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin && ';
+
+function runDocker(cmd: string): string {
+  return execSync(`${DOCKER_CMD_PREFIX}${cmd}`, { 
+    encoding: 'utf-8', 
+    stdio: ['pipe', 'pipe', 'pipe'] 
+  }).trim();
 }
 
 export interface ContainerInfo {
@@ -17,7 +23,7 @@ export interface ContainerInfo {
  */
 export function checkDockerDaemon(): CheckResult {
   try {
-    execSync('docker info', { stdio: 'pipe' });
+    runDocker('docker info');
     return { label: 'Daemon', status: 'ok', detail: 'Running' };
   } catch {
     return {
@@ -34,12 +40,10 @@ export function checkDockerDaemon(): CheckResult {
  */
 export function listRunningContainers(): ContainerInfo[] {
   try {
-    const output = execSync(
+    const output = runDocker(
       `docker ps --format "{{.Names}}|||{{.Image}}|||{{.Status}}|||{{.Ports}}"`,
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
     );
     return output
-      .trim()
       .split('\n')
       .filter(Boolean)
       .map((line) => {
@@ -49,6 +53,20 @@ export function listRunningContainers(): ContainerInfo[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Find the most likely proof server container.
+ */
+export function findProofServerContainer(): string | undefined {
+  const containers = listRunningContainers();
+  const match = containers.find(
+    (c) =>
+      c.image.includes('proof-server') ||
+      c.name.includes('proof-server') ||
+      c.name.includes('prover')
+  );
+  return match?.name;
 }
 
 /**
@@ -75,14 +93,57 @@ export function checkContainer(containerName: string): CheckResult {
 }
 
 /**
+ * Check for conflicting containers (even if stopped).
+ */
+export function checkDockerConflicts(containerNames: string[]): CheckResult[] {
+  const results: CheckResult[] = [];
+  try {
+    const output = runDocker('docker ps -a --format "{{.Names}}|||{{.ID}}|||{{.Status}}"');
+    
+    const allContainers = output.split('\n').filter(Boolean).map(line => {
+      const [name, id, status] = line.split('|||');
+      return { name: name ?? '', id: id ?? '', status: status ?? '' };
+    });
+
+    for (const target of containerNames) {
+      const match = allContainers.find(c => c.name === target);
+      if (match) {
+        // If it's not "Up", it's a potential zombie conflict
+        if (!match.status.startsWith('Up')) {
+          results.push({
+            label: `Conflict: ${target}`,
+            status: 'fail',
+            detail: `Zombie container detected (ID: ${match.id.substring(0, 7)})`,
+            fix: `docker rm -f ${match.id}`,
+            metadata: { containerId: match.id }
+          });
+        }
+      }
+    }
+  } catch {
+    // Docker not running or unavailable
+  }
+  return results;
+}
+
+/**
+ * Forcefully remove a container by ID.
+ */
+export function removeContainer(id: string): boolean {
+  try {
+    runDocker(`docker rm -f ${id}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Get Docker version string.
  */
 export function getDockerVersion(): string {
   try {
-    return execSync('docker version --format "{{.Server.Version}}"', {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
+    return runDocker('docker version --format "{{.Server.Version}}"');
   } catch {
     return 'unknown';
   }

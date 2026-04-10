@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { glob } from 'glob';
 import chalk from 'chalk';
 import { header, divider, ok, fail, warn, info } from '../ui/output.js';
+import { findProofServerContainer } from '../checks/docker.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,20 +33,13 @@ interface CircuitArg {
   type: { 'type-name': string; maxval?: number; length?: number };
 }
 
-interface ContractCircuit {
-  name: string;
-  pure: boolean;
-  proof: boolean;
-  arguments: CircuitArg[];
-}
-
-interface ContractInfo {
+export interface ContractInfo {
   'compiler-version': string;
   'language-version': string;
   circuits: ContractCircuit[];
 }
 
-interface SlotNode {
+export interface SlotNode {
   op: string;
   slot: number;
   deps: number[];
@@ -56,7 +50,7 @@ interface SlotNode {
   semantics?: string; // human-readable meaning
 }
 
-interface TraceFrame {
+export interface TraceFrame {
   type: 'constraint_violation' | 'input_mismatch' | 'timeout' | 'memory' | 'unknown_failure';
   circuit?: string;
   assertIdx?: number;
@@ -310,7 +304,7 @@ const CIRCUIT_NAME_RE = /circuit[:\s]+"?(\w+)"?/i;
 
 // ─── Trace Report Printer ─────────────────────────────────────────────────────
 
-function printTraceReport(frame: TraceFrame): void {
+export function printTraceReport(frame: TraceFrame): void {
   console.log('');
   console.log(chalk.bgRed.white.bold('  !! ZK PROOF FAILURE DETECTED !!  '));
   divider();
@@ -373,7 +367,7 @@ function printTraceReport(frame: TraceFrame): void {
 
 // ─── Deep ZKIR Analyzer ───────────────────────────────────────────────────────
 
-async function analyzeCircuitFailure(
+export async function analyzeCircuitFailure(
   circuitName: string,
   zkDirs: string[],
   contractInfo: ContractInfo | null,
@@ -441,24 +435,6 @@ async function analyzeCircuitFailure(
 
 // ─── Container Detection ──────────────────────────────────────────────────────
 
-function detectProofServerContainer(): string | undefined {
-  try {
-    const { execSync } = require('node:child_process');
-    const out = execSync('docker ps --format "{{.Names}}\t{{.Image}}"', { encoding: 'utf-8' });
-    for (const line of out.split('\n')) {
-      if (
-        line.includes('proof-server') ||
-        line.includes('prover') ||
-        line.includes('midnight-proof')
-      ) {
-        return line.split('\t')[0]?.trim();
-      }
-    }
-  } catch {
-    // Docker not running
-  }
-  return undefined;
-}
 
 // ─── Post-mortem Single-Circuit Analysis ─────────────────────────────────────
 
@@ -466,11 +442,20 @@ async function runPostMortem(circuitName: string, cwd: string): Promise<void> {
   header(`Midnight Trace — post-mortem analysis: ${circuitName}`);
   console.log(chalk.dim('  Analyzing ZKIR graph without a live Docker event...\n'));
 
-  const zkFilesFound = await glob('**/zkir/*.zkir', {
+  let zkFilesFound = await glob('**/*.zkir', {
     cwd,
-    ignore: ['node_modules/**'],
+    ignore: ['**/node_modules/**', '**/midnight-medic/**', '**/*.bzkir'],
     absolute: true,
   });
+
+  // Self-Correction: If not found, try walking up once to check parallel folders in workspace
+  if (zkFilesFound.length === 0) {
+    zkFilesFound = await glob('**/*.zkir', {
+      cwd: path.join(cwd, '..'),
+      ignore: ['**/node_modules/**', '**/midnight-medic/**', '**/*.bzkir'],
+      absolute: true,
+    });
+  }
   const zkDirs = [...new Set(zkFilesFound.map((f) => path.dirname(f)))];
 
   if (zkDirs.length === 0) {
@@ -526,19 +511,34 @@ async function runLiveMonitor(containerName: string, cwd: string): Promise<void>
   console.log(chalk.dim('  Press Ctrl+C to stop.\n'));
   divider();
 
-  // Pre-load all ZKIR directories
-  const zkFilesLive = await glob('**/zkir/*.zkir', {
+  // Pre-load all ZKIR directories with workspace-aware search
+  let zkFilesLive = await glob('**/*.zkir', {
     cwd,
-    ignore: ['node_modules/**'],
+    ignore: ['**/node_modules/**', '**/midnight-medic/**', '**/*.bzkir'],
     absolute: true,
   });
+
+  if (zkFilesLive.length === 0) {
+    zkFilesLive = await glob('**/*.zkir', {
+      cwd: path.join(cwd, '..'),
+      ignore: ['**/node_modules/**', '**/midnight-medic/**', '**/*.bzkir'],
+      absolute: true,
+    });
+  }
   const zkDirs = [...new Set(zkFilesLive.map((f) => path.dirname(f)))];
 
   const contractInfo = zkDirs.length > 0 ? await loadContractInfo(zkDirs[0]!) : null;
   if (contractInfo) {
-    ok('Contract artifacts', `${contractInfo.circuits.length} circuits loaded`);
+    ok('Contract artifacts', `${contractInfo.circuits.length} circuits analyzed for tracing`);
     divider();
   }
+
+  process.stdout.write(chalk.dim('  [-] Listening for proof attempts... '));
+  const spinner = ['/ ', '- ', '\\ ', '| '];
+  let i = 0;
+  const interval = setInterval(() => {
+    process.stdout.write(`\r  ${chalk.dim('[-]')} ${chalk.cyan(spinner[i++ % 4])} ${chalk.dim('Listening for proof attempts...')}`);
+  }, 150);
 
   let lastCircuit: string | undefined;
   let buffer = '';
@@ -660,7 +660,7 @@ export async function runTrace(options: {
   }
 
   // Live mode: stream Docker logs
-  const container = options.container ?? detectProofServerContainer();
+  const container = options.container ?? findProofServerContainer();
   if (!container) {
     console.log('');
     console.log(chalk.yellow('  [!] No running proof server container detected.'));

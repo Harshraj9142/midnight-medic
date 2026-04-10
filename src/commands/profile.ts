@@ -149,11 +149,21 @@ function analyzeZKIR(filePath: string): CircuitProfile {
 }
 
 async function findZKIRFiles(dir: string): Promise<string[]> {
-  return glob('**/*.zkir', {
+  let files = await glob('**/*.zkir', {
     cwd: dir,
-    ignore: ['node_modules/**'],
+    ignore: ['node_modules/**', '**/midnight-medic/**', '**/*.bzkir'],
     absolute: true,
   });
+
+  // Self-Correction: If not found in current dir, walk up to workspace root
+  if (files.length === 0) {
+    files = await glob('**/*.zkir', {
+      cwd: path.join(dir, '..'),
+      ignore: ['node_modules/**', '**/midnight-medic/**', '**/*.bzkir'],
+      absolute: true,
+    });
+  }
+  return files;
 }
 
 export async function runProfile(targetDir: string, options: { json: boolean }): Promise<void> {
@@ -163,13 +173,25 @@ export async function runProfile(targetDir: string, options: { json: boolean }):
   const files = await findZKIRFiles(targetDir);
 
   if (files.length === 0) {
-    warn('No .zkir files found', `Searched in: ${targetDir}`);
+    warn('No .zkir files found', `Searched in: ${targetDir} and its parent.`);
     info('Hint', 'Run the Compact compiler first: npx compactc');
     console.log('');
     return;
   }
 
-  const profiles = files.map(analyzeZKIR);
+  const allProfiles = files.map(analyzeZKIR);
+
+  // De-duplicate by circuit name (keep shortest path / best artifact)
+  const uniqueProfilesMap = new Map<string, CircuitProfile>();
+  for (const p of allProfiles) {
+    const existing = uniqueProfilesMap.get(p.circuit);
+    const isManaged = p.file.includes('managed');
+    
+    if (!existing || (isManaged && !existing.file.includes('managed')) || p.file.length < existing.file.length) {
+      uniqueProfilesMap.set(p.circuit, p);
+    }
+  }
+  const profiles = Array.from(uniqueProfilesMap.values());
 
   // Sort heaviest first
   profiles.sort((a, b) => b.totalWeight - a.totalWeight);

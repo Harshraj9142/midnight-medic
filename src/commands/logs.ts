@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import chalk from 'chalk';
 import { header, divider } from '../ui/output.js';
-import { listRunningContainers } from '../checks/docker.js';
+import { listRunningContainers, findProofServerContainer } from '../checks/docker.js';
 
 // ── Known Midnight Proof Server error patterns ─────────────────────────────
 interface LogPattern {
@@ -111,22 +111,12 @@ function processLogLine(line: string): void {
 }
 
 /** Find the most likely proof server container name from running containers. */
-function detectProofServerContainer(): string | undefined {
-  const containers = listRunningContainers();
-  const match = containers.find(
-    (c) =>
-      c.image.includes('proof-server') ||
-      c.name.includes('proof-server') ||
-      c.name.includes('prover'),
-  );
-  return match?.name;
-}
 
 export function runLogs(containerName?: string): void {
   header('Midnight Logs — streaming proof server output...');
 
   // Auto-detect container if not specified
-  const target = containerName ?? detectProofServerContainer();
+  const target = containerName ?? findProofServerContainer();
 
   if (!target) {
     console.log(chalk.yellow('  [!] No proof server container detected.'));

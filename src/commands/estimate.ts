@@ -224,20 +224,43 @@ export async function runEstimate(
   console.log(chalk.dim('  Analyzing ZKIR circuit graphs to pre-flight DUST cost estimates.'));
   console.log(chalk.dim('  (Note: Costs are estimates. Actual DUST varies with live network load.)\n'));
 
-  const files = await glob('**/*.zkir', {
+  let files = await glob('**/*.zkir', {
     cwd: targetDir,
-    ignore: ['node_modules/**', '**/*.bzkir'],
+    ignore: ['**/node_modules/**', '**/midnight-medic/**', '**/*.bzkir'],
     absolute: true,
   });
 
+  // Self-Correction: If not found in current dir, walk up to workspace root
   if (files.length === 0) {
-    warn('No .zkir files found', `Searched: ${targetDir}`);
+    files = await glob('**/*.zkir', {
+      cwd: path.join(targetDir, '..'),
+      ignore: ['**/node_modules/**', '**/midnight-medic/**', '**/*.bzkir'],
+      absolute: true,
+    });
+  }
+
+  if (files.length === 0) {
+    warn('No .zkir files found', `Searched in ${targetDir} and its parent.`);
     info('Hint', 'Compile your Compact contract first: npx compactc');
     return;
   }
 
-  // Load contract-info once
-  const firstDir = path.dirname(files[0]!);
+  // De-duplicate by circuit name
+  const uniqueFilesMap = new Map<string, string>();
+  for (const f of files) {
+    const name = path.basename(f, '.zkir');
+    // Simple heuristic: shortest path usually means it's the source or a clean artifact, 
+    // but in Midnight, we also favor paths containing 'managed'
+    const isManaged = f.includes('managed');
+    const existing = uniqueFilesMap.get(name);
+    if (!existing || (isManaged && !existing.includes('managed')) || f.length < existing.length) {
+      uniqueFilesMap.set(name, f);
+    }
+  }
+  const uniqueFiles = Array.from(uniqueFilesMap.values());
+  if (uniqueFiles.length === 0) return;
+
+  const firstDir = path.dirname(uniqueFiles[0]!);
   const contractInfo = loadContractInfo(firstDir);
   if (contractInfo) {
     ok('contract-info.json', `Compiler v${contractInfo['compiler-version']}`);
@@ -245,12 +268,12 @@ export async function runEstimate(
 
   // Filter if circuit name specified
   const targetFiles = circuitFilter
-    ? files.filter((f) => path.basename(f, '.zkir').toLowerCase() === circuitFilter.toLowerCase())
-    : files;
+    ? uniqueFiles.filter((f) => path.basename(f, '.zkir').toLowerCase() === circuitFilter.toLowerCase())
+    : uniqueFiles;
 
   if (targetFiles.length === 0) {
     fail('Circuit not found', circuitFilter ?? '');
-    info('Available', files.map((f) => path.basename(f, '.zkir')).join(', '));
+    info('Available', Array.from(uniqueFilesMap.keys()).join(', '));
     return;
   }
 
