@@ -1,8 +1,12 @@
 # midnight-medic
 
+[![NPM Package](https://img.shields.io/npm/v/midnight-medic.svg)](https://www.npmjs.com/package/midnight-medic)
+
 Environment diagnostics, version sync, and Compact linting for Midnight Network developers.
 
 ## Installation
+
+📦 **NPM Package**: [https://www.npmjs.com/package/midnight-medic](https://www.npmjs.com/package/midnight-medic)
 
 ```bash
 npm install -g midnight-medic
